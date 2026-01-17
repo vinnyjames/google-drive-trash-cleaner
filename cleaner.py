@@ -112,6 +112,10 @@ def main():
     flags = parse_cmdline()
     logger = configure_logs(flags.logfile)
 
+    if flags.auto:
+        print('\033[91mWARNING: AUTO MODE ENABLED - FILES WILL BE DELETED WITHOUT CONFIRMATION\033[0m')
+        print()
+
     # Use glob-based deletion if --globs is specified
     if flags.globs:
         for i in range(RETRY_NUM):
