@@ -45,9 +45,13 @@ class Dots:
             self.last_eta_len = 0
 
     def done(self, message='done'):
-        """Print a completion message with a newline."""
+        """Print a completion message with a newline and total execution time."""
         self._clear_eta()
-        print(message)
+        if len(self.timestamps) >= 2:
+            total_time = self.timestamps[-1] - self.timestamps[0]
+            print(f'{message} (total time: {total_time:.1f}s)')
+        else:
+            print(message)
 
     def average_time(self):
         """Return the average time between dots in seconds."""
