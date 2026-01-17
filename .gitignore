@@ -2,6 +2,7 @@
 __pycache__/
 *.py[cod]
 *$py.class
+client_secrets.json
 
 # C extensions
 *.so
@@ -102,3 +103,4 @@ ENV/
 
 # User configuration
 globs.json
+page_token
