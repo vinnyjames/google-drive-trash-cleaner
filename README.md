@@ -5,13 +5,6 @@
 > [Google Drive trash items will be automatically deleted after 30 days starting on October 13, 2020](https://gsuiteupdates.googleblog.com/2020/09/drive-trash-auto-delete-30-days.html).
 This project hence no longer has a purpose, and will not be maintained.
 
-Unlike many other cloud storage services, Google Drive doesn't auto delete files in trash/bin even after they've been there for a long time.
-There isn't even a way to check when a file was trashed.
-Emptying the entire trash folder is just too risky.
-
-This script helps you safely cleanup Google Drive's trash by deleting only files that've been there for more than 30 days
-<small>(or some other period of time)</small>.
-
 ## Dependencies
 To use the Python script directly
 * Python 3.5+
@@ -51,7 +44,7 @@ More command line options are available. You can read about them by running `cle
 ```
 usage: cleaner [-h] [-a] [-v] [-d #] [-q] [-t SECS] [-m] [--noprogress]
                [--fullpath] [--logfile PATH] [--ptokenfile PATH]
-               [--credfile PATH]
+               [--credfile PATH] [-g [PATH]]
 
 optional arguments:
   -h, --help            show this help message and exit
@@ -73,6 +66,14 @@ optional arguments:
                         path, may be different from the original path (when
                         trashing) if the original parent folder has moved.
   --logfile PATH        Path to log file. Default is no logs
+  --ptokenfile PATH     Path to page token file. Default is "page_token" in
+                        cleaner's parent folder
+  --credfile PATH       Path to OAuth2Credentials file. Default is
+                        ~/.credentials/google-drive-trash-cleaner.json
+  -g [PATH], --globs [PATH]
+                        Use glob patterns from config file for pattern-based
+                        deletion. Default file: globs.json. When specified,
+                        ignores --days.
 ```
 
 ### Credit
