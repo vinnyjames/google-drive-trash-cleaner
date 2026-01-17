@@ -31,17 +31,9 @@ else:
     CLEANER_PATH = os.path.realpath(__file__)
 PAGE_TOKEN_FILE = os.path.join(os.path.dirname(CLEANER_PATH), 'page_token')
 CREDENTIAL_FILE = os.path.join(os.path.expanduser('~'), '.credentials', 'google-drive-trash-cleaner.json')
+CLIENT_SECRETS_FILE = os.path.join(os.path.dirname(CLEANER_PATH), 'client_secrets.json')
 
-CLIENT_CREDENTIAL = {
-    "client_id" : "359188752904-817oqa6dr7elufur5no09q585trpqf1l.apps.googleusercontent.com",
-    "client_secret" : "uZtsDf5vaUm8K-kZLZETmsYi",
-    "scope" : 'https://www.googleapis.com/auth/drive',
-    "redirect_uri" : "urn:ietf:wg:oauth:2.0:oob",
-    "token_uri" : "https://accounts.google.com/o/oauth2/token",
-    "auth_uri" : "https://accounts.google.com/o/oauth2/auth",
-    "revoke_uri" : "https://accounts.google.com/o/oauth2/revoke",
-    "pkce" : True
-}
+SCOPES = ['https://www.googleapis.com/auth/drive']
 
 PAGE_SIZE_LARGE = 1000
 PAGE_SIZE_SMALL = 100
