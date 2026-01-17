@@ -384,6 +384,7 @@ def run_glob_deletion(service, flags):
         elapsed = time.time() - start_time
 
         if not files:
+            print(f'Search completed in {elapsed:.1f}s')
             print(f'No trashed files match pattern "{pattern}"')
             print()
             continue
@@ -398,14 +399,13 @@ def run_glob_deletion(service, flags):
             total_pages = (len(files) + max_files - 1) // max_files
 
             print()
-            print(f'Page {page_num}/{total_pages} ({len(page)} files):')
             print('-' * 60)
             print(f'{"Last Opened":<24}    {"File Name"}')
             for f in page:
                 viewed = f.get('viewedByMeTime', 'N/A')[:19] if f.get('viewedByMeTime') else 'Never'
                 print(f'{viewed:<24}    {f["name"]}')
             print('-' * 60)
-
+            print(f'Page {page_num}/{total_pages} ({len(page)} files)')
             print(f'Search completed in {elapsed:.1f}s')
 
             if flags.view:
