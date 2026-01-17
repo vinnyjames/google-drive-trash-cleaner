@@ -1,10 +1,5 @@
 # Google Drive Trash Cleaner
 
-> :warning: ***This project is deprecated***.
->
-> [Google Drive trash items will be automatically deleted after 30 days starting on October 13, 2020](https://gsuiteupdates.googleblog.com/2020/09/drive-trash-auto-delete-30-days.html).
-This project hence no longer has a purpose, and will not be maintained.
-
 ## Dependencies
 To use the Python script directly
 * Python 3.5+
