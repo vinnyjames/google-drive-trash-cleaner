@@ -1,7 +1,0 @@
-{
-	"maxFilesPerDelete": 100,
-	"maxDateOpened": "2000-01-01",
-	"globs": [
-		"very_specific_files_*.json"
-	]
-}
