@@ -1,0 +1,20 @@
+{
+  "allowedPrompts": [
+    {
+      "tool": "Edit",
+      "prompt": "update skill files"
+    },
+    {
+      "tool": "Write",
+      "prompt": "update skill files"
+    },
+    {
+      "tool": "Edit",
+      "prompt": "modify skill documentation"
+    },
+    {
+      "tool": "Write",
+      "prompt": "create or update skill files"
+    }
+  ]
+}
