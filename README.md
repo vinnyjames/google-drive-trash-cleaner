@@ -3,10 +3,9 @@
 ## Dependencies
 To use the Python script directly
 * Python 3.5+
-* Package *google-api-python-client* and *oauth2client*. Run  
-`pip install --upgrade google-api-python-client` and  
-`pip install --upgrade oauth2client`  
-to install
+* Required packages: *google-api-python-client*, *google-auth*, *google-auth-oauthlib*, and *google-auth-httplib2*. Run
+`pip install -r requirements.txt`
+to install all dependencies
 
 ## How-to
 Download `cleaner.py`, place it in an empty local folder, and run it from command line.
@@ -16,9 +15,15 @@ You're asked whether you want to delete them.
 If confirmed, these files are permanently deleted from Google Drive.
 
 ### Google authorization
+Before running `cleaner` for the first time, you need to set up OAuth 2.0 credentials:
+1. Go to [Google Cloud Console](https://console.cloud.google.com/)
+2. Create a project and enable the Google Drive API
+3. Create OAuth 2.0 credentials (Desktop app type)
+4. Download the JSON file and save it as `client_secrets.json` in the same directory as `cleaner.py`
+
 The first time you run `cleaner`, you will be prompted with a Google authorization page asking you for permission to view and manage your Google Drive files.
 Once authorized, a credential file will be saved in `.credentials/google-drive-trash-cleaner.json` under your home directory.
-You don't need to manually authorize `cleaner` again until you delete this credential file or revoke permission on your Google [account](https://myaccount.google.com/permissions "Apps connected to your account") page.  
+You don't need to manually authorize `cleaner` again until you delete this credential file or revoke permission on your Google [account](https://myaccount.google.com/permissions "Apps connected to your account") page.
 You can specify a custom location for the credential file by using the command line option `--credfile`. This is helpful if you're using multiple Google accounts with `cleaner`.
 
 ### `page_token` file
