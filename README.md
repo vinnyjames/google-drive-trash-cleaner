@@ -71,6 +71,28 @@ optional arguments:
                         ignores --days.
 ```
 
+### Glob-based deletion
+
+The `-g/--globs` option enables pattern-based deletion using a JSON config file. Example `globs.json`:
+
+```json
+{
+    "maxFilesPerDelete": 100,
+    "maxDateOpened": "2025-01-01",
+    "requiredParent": "myFolder",
+    "globs": [
+        "*.json",
+        "backup_*.txt"
+    ]
+}
+```
+
+Config options:
+- `globs` (required): Array of glob patterns to match filenames
+- `maxFilesPerDelete`: Maximum files to process per confirmation prompt (default: 100)
+- `maxDateOpened`: Only delete files last opened before this date (YYYY-MM-DD)
+- `requiredParent` (optional): Only delete files that have this folder name somewhere in their path ancestry
+
 ### Credit
 The idea for the script's working mechanism is borrowed from
 [this Stack Overflow question](https://stackoverflow.com/questions/34803290/how-to-retrieve-a-recent-list-of-trashed-files-using-google-drive-api).

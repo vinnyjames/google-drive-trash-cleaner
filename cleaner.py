@@ -16,8 +16,6 @@ import calendar
 import logging
 import json
 import fnmatch
-from concurrent.futures import ThreadPoolExecutor, as_completed
-
 from googleapiclient import discovery
 from googleapiclient.errors import HttpError
 from google.auth.exceptions import RefreshError
@@ -355,11 +353,47 @@ def delete_old_files(service, deletionList, flags):
         if not confirmed:
             return False
     print('Deleting...')
-    for item in reversed(deletionList):
-        request = service.files().delete(fileId = item['fileId'])
-        execute_request(request, flags.timeout)
-        logger.info(item['time'] + ''.ljust(4) + item['name'])
-    print('Files successfully deleted')
+    deleted_count = 0
+    errors = []
+
+    def batch_callback(request_id, response, exception):
+        nonlocal deleted_count
+        if exception:
+            errors.append((request_id, exception))
+        else:
+            deleted_count += 1
+            # Find the item to log
+            for item in deletionList:
+                if item['fileId'] == request_id:
+                    logger.info(item['time'] + ''.ljust(4) + item['name'])
+                    break
+
+    # Process files in batches (reversed to delete newest first)
+    reversed_list = list(reversed(deletionList))
+    for i in range(0, len(reversed_list), BATCH_SIZE):
+        batch_files = reversed_list[i:i + BATCH_SIZE]
+        batch = service.new_batch_http_request(callback=batch_callback)
+
+        for item in batch_files:
+            batch.add(
+                service.files().delete(fileId=item['fileId']),
+                request_id=item['fileId']
+            )
+
+        try:
+            batch.execute()
+        except Exception as e:
+            print(f'Batch request failed: {e}')
+
+    # Report errors
+    for file_id, error in errors:
+        file_name = next((item['name'] for item in deletionList if item['fileId'] == file_id), file_id)
+        print(f'Error deleting {file_name}: {error}')
+
+    if errors:
+        print(f'Deleted {deleted_count} files, {len(errors)} errors')
+    else:
+        print('Files successfully deleted')
     return True
 
 def run_glob_deletion(service, flags):
@@ -367,20 +401,25 @@ def run_glob_deletion(service, flags):
     config = load_globs_config(flags.globs)
     max_files = config.get('maxFilesPerDelete', 100)
     max_date = config.get('maxDateOpened')
+    required_parent = config.get('requiredParent')
     patterns = config.get('globs', [])
 
     if not patterns:
         print('No glob patterns specified in config file')
         return
 
-    print(f'Glob config: maxFilesPerDelete={max_files}, maxDateOpened={max_date}')
+    print(f'Glob config: maxFilesPerDelete={max_files}, maxDateOpened={max_date}', end='')
+    if required_parent:
+        print(f', requiredParent={required_parent}')
+    else:
+        print()
     print(f'Patterns: {patterns}')
     print()
 
     for pattern in patterns:
         print(f'--- Processing pattern: {pattern} ---')
         start_time = time.time()
-        files = get_trashed_files_by_glob(service, pattern, max_date, flags.timeout)
+        files = get_trashed_files_by_glob(service, pattern, max_date, flags.timeout, required_parent)
         elapsed = time.time() - start_time
 
         if not files:
@@ -417,12 +456,9 @@ def run_glob_deletion(service, flags):
                 confirmed = ask_usr_confirmation(len(page))
 
             if confirmed:
-                dots = Dots(total=len(page) * 2, msg='Deleting ')
-                deleted_count = delete_files_concurrent(
-                    service, page, flags.timeout, dots
-                )
+                deleted_count = delete_files_batch(service, page, flags.timeout)
                 total_deleted += deleted_count
-                dots.done(f' Deleted {deleted_count} file(s)')
+                print(f'Deleted {deleted_count} file(s)')
             else:
                 print('Skipped this page')
 
@@ -442,61 +478,140 @@ def load_globs_config(config_path):
 
     return config
 
-def delete_files_concurrent(service, files, timeout, dots, max_workers=1):
-    """Delete files concurrently using a thread pool.
+# Thread Safety Note (as of January 2026):
+# The google-api-python-client library uses httplib2 for HTTP transport, which is NOT
+# thread-safe. Sharing a single service object across threads can cause crashes, SSL errors,
+# and unpredictable behavior. Instead of using ThreadPoolExecutor, we use Google's batch
+# request API which bundles up to 100 requests in a single HTTP call.
+# See: https://googleapis.github.io/google-api-python-client/docs/thread_safety.html
+
+BATCH_SIZE = 100  # Google API maximum batch size
+
+def delete_files_batch(service, files, timeout):
+    """Delete files using Google's batch request API.
 
     Args:
         service: Google API service object
         files: List of file resources to delete
         timeout: Request timeout in seconds
-        dots: Dots instance for progress display
-        max_workers: Maximum concurrent deletions
 
     Returns:
         Number of files successfully deleted
     """
     deleted_count = 0
-    lock = __import__('threading').Lock()
+    errors = []
+    total_batches = (len(files) + BATCH_SIZE - 1) // BATCH_SIZE
+    start_time = time.time()
 
-    def delete_file(f):
-        with lock:
-            dots.dot()
-        request = service.files().delete(fileId=f['id'])
-        execute_request(request, timeout)
-        with lock:
-            dots.dot('x')
-        return f['id']
+    def batch_callback(request_id, response, exception):
+        nonlocal deleted_count
+        if exception:
+            errors.append((request_id, exception))
+        else:
+            deleted_count += 1
 
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {}
-        for f in files:
-            futures[executor.submit(delete_file, f)] = f
-            time.sleep(0.25)  # 250ms delay between submits
-        for future in as_completed(futures):
+    # Process files in batches of BATCH_SIZE
+    for batch_num, i in enumerate(range(0, len(files), BATCH_SIZE), 1):
+        batch_files = files[i:i + BATCH_SIZE]
+        batch = service.new_batch_http_request(callback=batch_callback)
+
+        for f in batch_files:
+            batch.add(
+                service.files().delete(fileId=f['id']),
+                request_id=f['id']
+            )
+
+        print(f'\rDeleting batch {batch_num}/{total_batches}...', end='', flush=True)
+        try:
+            batch.execute()
+        except Exception as e:
+            print(f' \033[93mretrying\033[0m...', end='', flush=True)
+            # Retry once
+            batch = service.new_batch_http_request(callback=batch_callback)
+            for f in batch_files:
+                batch.add(
+                    service.files().delete(fileId=f['id']),
+                    request_id=f['id']
+                )
             try:
-                future.result()
-                with lock:
-                    deleted_count += 1
-            except Exception as e:
-                f = futures[future]
-                print(f'\nError deleting {f["name"]}: {e}')
+                batch.execute()
+            except Exception as e2:
+                print(f' \033[91mFAILED\033[0m: {e2}')
+
+    elapsed = time.time() - start_time
+    print(f'\rDeleting batch {total_batches}/{total_batches}... done ({elapsed:.1f}s)')
+
+    # Report errors
+    if errors:
+        print(f'\033[91m{len(errors)} error(s):\033[0m')
+        for file_id, error in errors:
+            file_name = next((f['name'] for f in files if f['id'] == file_id), file_id)
+            print(f'  {file_name}: {error}')
 
     return deleted_count
 
-def get_trashed_files_by_glob(service, pattern, max_date, timeout):
-    """Get trashed files matching a glob pattern, filtered by date.
+
+def has_parent_named(service, file_id, required_parent, timeout, cache=None):
+    """Check if a file has an ancestor folder with the given name.
+
+    Args:
+        service: Google API service object
+        file_id: ID of the file to check
+        required_parent: Name of the required parent folder
+        timeout: Request timeout in seconds
+        cache: Optional dict to cache folder lookups (id -> name)
+
+    Returns:
+        True if any ancestor folder has the required name, False otherwise
+    """
+    if cache is None:
+        cache = {}
+
+    current_id = file_id
+    while current_id:
+        # Check cache first
+        if current_id in cache:
+            name, parent_id = cache[current_id]
+            if name == required_parent:
+                return True
+            current_id = parent_id
+            continue
+
+        # Fetch from API
+        try:
+            request = service.files().get(fileId=current_id, fields='name,parents')
+            response = execute_request(request, timeout)
+            name = response.get('name', '')
+            parent_id = response.get('parents', [None])[0]
+            cache[current_id] = (name, parent_id)
+
+            if name == required_parent:
+                return True
+            current_id = parent_id
+        except HttpError:
+            # File may have been deleted or inaccessible
+            break
+
+    return False
+
+
+def get_trashed_files_by_glob(service, pattern, max_date, timeout, required_parent=None):
+    """Get trashed files matching a glob pattern, filtered by date and parent.
 
     Args:
         service: Google API service object
         pattern: Glob pattern to match filenames (e.g., "*.json", "exe_*.json")
         max_date: Only include files last opened before this date (YYYY-MM-DD)
         timeout: Request timeout in seconds
+        required_parent: If set, only include files that have this folder name
+                        somewhere in their path ancestry
 
     Returns:
         List of file resources matching the pattern
     """
     matching_files = []
     page_token = None
+    parent_cache = {}  # Cache for parent folder lookups
 
     # Parse max_date to timestamp for comparison
     max_timestamp = None
@@ -506,13 +621,19 @@ def get_trashed_files_by_glob(service, pattern, max_date, timeout):
         except ValueError:
             print(f'Warning: Invalid maxDateOpened format "{max_date}", ignoring date filter')
 
+    # Include parents field if we need to check ancestry
+    fields = "nextPageToken,files(id,name,viewedByMeTime,trashedTime"
+    if required_parent:
+        fields += ",parents"
+    fields += ")"
+
     while True:
         # Query all trashed files owned by me
         request = service.files().list(
             q="trashed=true and 'me' in owners",
             pageToken=page_token,
             pageSize=1000,
-            fields="nextPageToken,files(id,name,viewedByMeTime,trashedTime)"
+            fields=fields
         )
         response = execute_request(request, timeout)
         files = response.get('files', [])
@@ -526,6 +647,12 @@ def get_trashed_files_by_glob(service, pattern, max_date, timeout):
             if max_timestamp and f.get('viewedByMeTime'):
                 viewed_time = parse_time(f['viewedByMeTime'])
                 if viewed_time >= max_timestamp:
+                    continue
+
+            # Check required parent filter
+            if required_parent:
+                parent_id = f.get('parents', [None])[0]
+                if parent_id and not has_parent_named(service, parent_id, required_parent, timeout, parent_cache):
                     continue
 
             matching_files.append(f)
