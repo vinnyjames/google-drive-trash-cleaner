@@ -511,6 +511,7 @@ def delete_files_batch(service, files, timeout):
             deleted_count += 1
 
     # Process files in batches of BATCH_SIZE
+    batch_times = []
     for batch_num, i in enumerate(range(0, len(files), BATCH_SIZE), 1):
         batch_files = files[i:i + BATCH_SIZE]
         batch = service.new_batch_http_request(callback=batch_callback)
@@ -522,6 +523,7 @@ def delete_files_batch(service, files, timeout):
             )
 
         print(f'\rDeleting batch {batch_num}/{total_batches}...', end='', flush=True)
+        batch_start = time.time()
         try:
             batch.execute()
         except Exception as e:
@@ -538,8 +540,15 @@ def delete_files_batch(service, files, timeout):
             except Exception as e2:
                 print(f' \033[91mFAILED\033[0m: {e2}')
 
+        batch_elapsed = time.time() - batch_start
+        batch_times.append(batch_elapsed)
+        avg_batch_time = sum(batch_times) / len(batch_times)
+        remaining_batches = total_batches - batch_num
+        eta = avg_batch_time * remaining_batches
+        print(f'\rDeleting batch {batch_num}/{total_batches}... {batch_elapsed:.1f}s (ETA: {eta:.0f}s)', end='', flush=True)
+
     elapsed = time.time() - start_time
-    print(f'\rDeleting batch {total_batches}/{total_batches}... done ({elapsed:.1f}s)')
+    print(f'\rDeleting batch {total_batches}/{total_batches}... done ({elapsed:.1f}s total)' + ' ' * 20)
 
     # Report errors
     if errors:
