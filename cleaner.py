@@ -6,7 +6,6 @@
 # You should have received a copy of the GNU General Public License 
 # along with this program; if not, see <http://www.gnu.org/licenses>.
 
-import httplib2
 import os
 import sys
 import io
@@ -15,13 +14,14 @@ import argparse
 import time
 import calendar
 import logging
-import warnings
+import json
+import fnmatch
+from googleapiclient import discovery
+from googleapiclient.errors import HttpError
+from google.auth.exceptions import RefreshError
 
-from apiclient import discovery
-from apiclient.errors import HttpError
-from oauth2client import client
-from oauth2client import tools
-from oauth2client.file import Storage
+from google_auth import GoogleAuth
+from dots import Dots
 
 if getattr(sys, 'frozen', False):
     # running in a bundle
@@ -31,17 +31,9 @@ else:
     CLEANER_PATH = os.path.realpath(__file__)
 PAGE_TOKEN_FILE = os.path.join(os.path.dirname(CLEANER_PATH), 'page_token')
 CREDENTIAL_FILE = os.path.join(os.path.expanduser('~'), '.credentials', 'google-drive-trash-cleaner.json')
+CLIENT_SECRETS_FILE = os.path.join(os.path.dirname(CLEANER_PATH), 'client_secrets.json')
 
-CLIENT_CREDENTIAL = {
-    "client_id" : "359188752904-817oqa6dr7elufur5no09q585trpqf1l.apps.googleusercontent.com",
-    "client_secret" : "uZtsDf5vaUm8K-kZLZETmsYi",
-    "scope" : 'https://www.googleapis.com/auth/drive',
-    "redirect_uri" : "urn:ietf:wg:oauth:2.0:oob",
-    "token_uri" : "https://accounts.google.com/o/oauth2/token",
-    "auth_uri" : "https://accounts.google.com/o/oauth2/auth",
-    "revoke_uri" : "https://accounts.google.com/o/oauth2/revoke",
-    "pkce" : True
-}
+SCOPES = ['https://www.googleapis.com/auth/drive']
 
 PAGE_SIZE_LARGE = 1000
 PAGE_SIZE_SMALL = 100
@@ -119,6 +111,30 @@ except TypeError:
 def main():
     flags = parse_cmdline()
     logger = configure_logs(flags.logfile)
+
+    if flags.auto:
+        print('\033[91mWARNING: AUTO MODE ENABLED - FILES WILL BE DELETED WITHOUT CONFIRMATION\033[0m')
+        print()
+
+    # Use glob-based deletion if --globs is specified
+    if flags.globs:
+        for i in range(RETRY_NUM):
+            try:
+                service = build_service(flags)
+                run_glob_deletion(service, flags)
+            except RefreshError:
+                print('Authentication error')
+            except TimeoutError:
+                print('Timeout: Google backend error.')
+                print('Retries unsuccessful. Abort action.')
+                return
+            else:
+                return
+            time.sleep(RETRY_INTERVAL)
+        print("Retries unsuccessful. Abort action.")
+        return
+
+    # Standard days-based deletion
     pageTokenFile = PageTokenFile(flags.ptokenfile)
     for i in range(RETRY_NUM):
         try:
@@ -128,10 +144,8 @@ def main():
                 get_deletion_list(service, pageToken, flags)
             pageTokenFile.save(pageTokenBefore)
             listEmpty = delete_old_files(service, deletionList, flags)
-        except client.HttpAccessTokenRefreshError:
+        except RefreshError:
             print('Authentication error')
-        except httplib2.ServerNotFoundError as e:
-            print('Error:', e)
         except TimeoutError:
             print('Timeout: Google backend error.')
             print('Retries unsuccessful. Abort action.')
@@ -142,17 +156,17 @@ def main():
     else:
         print("Retries unsuccessful. Abort action.")
         return
-    
+
     if listEmpty:
         pageTokenFile.save(pageTokenAfter)
 
 def parse_cmdline():
     parser = argparse.ArgumentParser()
-    # flags required by oauth2client.tools.run_flow(), hidden
+    # flags for OAuth authentication flow, hidden
     parser.add_argument('--auth_host_name', action='store', default='localhost', help=argparse.SUPPRESS)
     parser.add_argument('--noauth_local_webserver', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--auth_host_port', action='store', nargs='*', default=[8080, 8090], type=int, help=argparse.SUPPRESS)
-    parser.add_argument('--logging_level', action='store', default='ERROR', 
+    parser.add_argument('--logging_level', action='store', default='ERROR',
                         choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], help=argparse.SUPPRESS)
     # flags defined by cleaner.py
     parser.add_argument('-a', '--auto', action='store_true', 
@@ -183,6 +197,10 @@ def parse_cmdline():
                     format(os.path.basename(PAGE_TOKEN_FILE)))
     parser.add_argument('--credfile', action='store', default=CREDENTIAL_FILE, metavar='PATH',
             help="Path to OAuth2Credentials file. Default is %(default)s")
+    default_globs_file = os.path.join(os.path.dirname(CLEANER_PATH), 'globs.json')
+    parser.add_argument('-g', '--globs', action='store', nargs='?', const=default_globs_file, metavar='PATH',
+            help="Use glob patterns from config file for pattern-based deletion. "
+                 "Default file: globs.json. When specified, ignores --days.")
     flags = parser.parse_args()
     if flags.days < 0:
         parser.error('argument --days must be nonnegative')
@@ -212,29 +230,23 @@ def configure_logs(logPath):
     return logger
 
 def build_service(flags):
-    credentials = get_credentials(flags)
-    http = credentials.authorize(httplib2.Http())
-    service = discovery.build('drive', 'v3', http=http)
+    auth = GoogleAuth(
+        scopes=SCOPES,
+        client_secrets_file=CLIENT_SECRETS_FILE,
+        credentials_file=flags.credfile,
+        app_name='Google Drive Trash Cleaner'
+    )
+    try:
+        credentials = auth.get_credentials(
+            use_local_server=not flags.noauth_local_webserver,
+            host=flags.auth_host_name,
+            port=flags.auth_host_port[0] if flags.auth_host_port else 8080
+        )
+    except FileNotFoundError as e:
+        print(str(e))
+        sys.exit(1)
+    service = discovery.build('drive', 'v3', credentials=credentials)
     return service
-
-def get_credentials(flags):
-    """Gets valid user credentials from storage.
-
-    If nothing has been stored, or if the stored credentials are invalid,
-    the OAuth2 flow is completed to obtain the new credentials.
-
-    Returns:
-        Credentials, the obtained credential.
-    """
-    store = Storage(flags.credfile)
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        credentials = store.get()
-    if not credentials or credentials.invalid:
-        flow = client.OAuth2WebServerFlow(**CLIENT_CREDENTIAL)
-        credentials = tools.run_flow(flow, store, flags)
-        print('credential file saved at\n\t' + flags.credfile)
-    return credentials
 
 def get_deletion_list(service, pageToken, flags, pathFinder=None):
     """Get list of files to be deleted and page token for future use.
@@ -345,12 +357,326 @@ def delete_old_files(service, deletionList, flags):
         if not confirmed:
             return False
     print('Deleting...')
-    for item in reversed(deletionList):
-        request = service.files().delete(fileId = item['fileId'])
-        execute_request(request, flags.timeout)
-        logger.info(item['time'] + ''.ljust(4) + item['name'])
-    print('Files successfully deleted')
+    deleted_count = 0
+    errors = []
+
+    def batch_callback(request_id, response, exception):
+        nonlocal deleted_count
+        if exception:
+            errors.append((request_id, exception))
+        else:
+            deleted_count += 1
+            # Find the item to log
+            for item in deletionList:
+                if item['fileId'] == request_id:
+                    logger.info(item['time'] + ''.ljust(4) + item['name'])
+                    break
+
+    # Process files in batches (reversed to delete newest first)
+    reversed_list = list(reversed(deletionList))
+    for i in range(0, len(reversed_list), BATCH_SIZE):
+        batch_files = reversed_list[i:i + BATCH_SIZE]
+        batch = service.new_batch_http_request(callback=batch_callback)
+
+        for item in batch_files:
+            batch.add(
+                service.files().delete(fileId=item['fileId']),
+                request_id=item['fileId']
+            )
+
+        try:
+            batch.execute()
+        except Exception as e:
+            print(f'Batch request failed: {e}')
+
+    # Report errors
+    for file_id, error in errors:
+        file_name = next((item['name'] for item in deletionList if item['fileId'] == file_id), file_id)
+        print(f'Error deleting {file_name}: {error}')
+
+    if errors:
+        print(f'Deleted {deleted_count} files, {len(errors)} errors')
+    else:
+        print('Files successfully deleted')
     return True
+
+def run_glob_deletion(service, flags):
+    """Run glob-based deletion using config from globs.json."""
+    config = load_globs_config(flags.globs)
+    max_files = config.get('maxFilesPerDelete', 100)
+    max_date = config.get('maxDateOpened')
+    required_parent = config.get('requiredParent')
+    patterns = config.get('globs', [])
+
+    if not patterns:
+        print('No glob patterns specified in config file')
+        return
+
+    print(f'Glob config: maxFilesPerDelete={max_files}, maxDateOpened={max_date}', end='')
+    if required_parent:
+        print(f', requiredParent={required_parent}')
+    else:
+        print()
+    print(f'Patterns: {patterns}')
+    print()
+
+    for pattern in patterns:
+        print(f'--- Processing pattern: {pattern} ---')
+        start_time = time.time()
+        files = get_trashed_files_by_glob(service, pattern, max_date, flags.timeout, required_parent)
+        elapsed = time.time() - start_time
+
+        if not files:
+            print(f'Search completed in {elapsed:.1f}s')
+            print(f'No trashed files match pattern "{pattern}"')
+            print()
+            continue
+
+        print(f'Found {len(files)} file(s) matching "{pattern}"')
+
+        # Process in pages
+        total_deleted = 0
+        for page_start in range(0, len(files), max_files):
+            page = files[page_start:page_start + max_files]
+            page_num = (page_start // max_files) + 1
+            total_pages = (len(files) + max_files - 1) // max_files
+
+            print()
+            print('-' * 60)
+            print(f'{"Last Opened":<24}    {"File Name"}')
+            for f in page:
+                viewed = f.get('viewedByMeTime', 'N/A')[:19] if f.get('viewedByMeTime') else 'Never'
+                print(f'{viewed:<24}    {f["name"]}')
+            print('-' * 60)
+            print(f'Page {page_num}/{total_pages} ({len(page)} files)')
+            print(f'Search completed in {elapsed:.1f}s')
+
+            if flags.view:
+                continue
+
+            if flags.auto:
+                confirmed = True
+            else:
+                confirmed = ask_usr_confirmation(len(page))
+
+            if confirmed:
+                deleted_count = delete_files_batch(service, page, flags.timeout)
+                total_deleted += deleted_count
+                print(f'Deleted {deleted_count} file(s)')
+            else:
+                print('Skipped this page')
+
+        if not flags.view:
+            print(f'\nTotal deleted for pattern "{pattern}": {total_deleted}')
+        print()
+
+def load_globs_config(config_path):
+    """Load and validate globs.json config file."""
+    config_path = os.path.realpath(config_path)
+    if not os.path.exists(config_path):
+        print(f'Error: Config file not found: {config_path}')
+        sys.exit(1)
+
+    with open(config_path, 'r', encoding='utf-8') as f:
+        config = json.load(f)
+
+    return config
+
+# Thread Safety Note (as of January 2026):
+# The google-api-python-client library uses httplib2 for HTTP transport, which is NOT
+# thread-safe. Sharing a single service object across threads can cause crashes, SSL errors,
+# and unpredictable behavior. Instead of using ThreadPoolExecutor, we use Google's batch
+# request API which bundles up to 100 requests in a single HTTP call.
+# See: https://googleapis.github.io/google-api-python-client/docs/thread_safety.html
+
+BATCH_SIZE = 100  # Google API maximum batch size
+
+def delete_files_batch(service, files, timeout):
+    """Delete files using Google's batch request API.
+
+    Args:
+        service: Google API service object
+        files: List of file resources to delete
+        timeout: Request timeout in seconds
+
+    Returns:
+        Number of files successfully deleted
+    """
+    deleted_count = 0
+    errors = []
+    total_batches = (len(files) + BATCH_SIZE - 1) // BATCH_SIZE
+    start_time = time.time()
+
+    def batch_callback(request_id, response, exception):
+        nonlocal deleted_count
+        if exception:
+            errors.append((request_id, exception))
+        else:
+            deleted_count += 1
+
+    # Process files in batches of BATCH_SIZE
+    batch_times = []
+    for batch_num, i in enumerate(range(0, len(files), BATCH_SIZE), 1):
+        batch_files = files[i:i + BATCH_SIZE]
+        batch = service.new_batch_http_request(callback=batch_callback)
+
+        for f in batch_files:
+            batch.add(
+                service.files().delete(fileId=f['id']),
+                request_id=f['id']
+            )
+
+        print(f'\rDeleting batch {batch_num}/{total_batches}...', end='', flush=True)
+        batch_start = time.time()
+        try:
+            batch.execute()
+        except Exception as e:
+            print(f' \033[93mretrying\033[0m...', end='', flush=True)
+            # Retry once
+            batch = service.new_batch_http_request(callback=batch_callback)
+            for f in batch_files:
+                batch.add(
+                    service.files().delete(fileId=f['id']),
+                    request_id=f['id']
+                )
+            try:
+                batch.execute()
+            except Exception as e2:
+                print(f' \033[91mFAILED\033[0m: {e2}')
+
+        batch_elapsed = time.time() - batch_start
+        batch_times.append(batch_elapsed)
+        avg_batch_time = sum(batch_times) / len(batch_times)
+        remaining_batches = total_batches - batch_num
+        eta = avg_batch_time * remaining_batches
+        print(f'\rDeleting batch {batch_num}/{total_batches}... {batch_elapsed:.1f}s (ETA: {eta:.0f}s)', end='', flush=True)
+
+    elapsed = time.time() - start_time
+    print(f'\rDeleting batch {total_batches}/{total_batches}... done ({elapsed:.1f}s total)' + ' ' * 20)
+
+    # Report errors
+    if errors:
+        print(f'\033[91m{len(errors)} error(s):\033[0m')
+        for file_id, error in errors:
+            file_name = next((f['name'] for f in files if f['id'] == file_id), file_id)
+            print(f'  {file_name}: {error}')
+
+    return deleted_count
+
+
+def has_parent_named(service, file_id, required_parent, timeout, cache=None):
+    """Check if a file has an ancestor folder with the given name.
+
+    Args:
+        service: Google API service object
+        file_id: ID of the file to check
+        required_parent: Name of the required parent folder
+        timeout: Request timeout in seconds
+        cache: Optional dict to cache folder lookups (id -> name)
+
+    Returns:
+        True if any ancestor folder has the required name, False otherwise
+    """
+    if cache is None:
+        cache = {}
+
+    current_id = file_id
+    while current_id:
+        # Check cache first
+        if current_id in cache:
+            name, parent_id = cache[current_id]
+            if name == required_parent:
+                return True
+            current_id = parent_id
+            continue
+
+        # Fetch from API
+        try:
+            request = service.files().get(fileId=current_id, fields='name,parents')
+            response = execute_request(request, timeout)
+            name = response.get('name', '')
+            parent_id = response.get('parents', [None])[0]
+            cache[current_id] = (name, parent_id)
+
+            if name == required_parent:
+                return True
+            current_id = parent_id
+        except HttpError:
+            # File may have been deleted or inaccessible
+            break
+
+    return False
+
+
+def get_trashed_files_by_glob(service, pattern, max_date, timeout, required_parent=None):
+    """Get trashed files matching a glob pattern, filtered by date and parent.
+
+    Args:
+        service: Google API service object
+        pattern: Glob pattern to match filenames (e.g., "*.json", "exe_*.json")
+        max_date: Only include files last opened before this date (YYYY-MM-DD)
+        timeout: Request timeout in seconds
+        required_parent: If set, only include files that have this folder name
+                        somewhere in their path ancestry
+
+    Returns:
+        List of file resources matching the pattern
+    """
+    matching_files = []
+    page_token = None
+    parent_cache = {}  # Cache for parent folder lookups
+
+    # Parse max_date to timestamp for comparison
+    max_timestamp = None
+    if max_date:
+        try:
+            max_timestamp = calendar.timegm(time.strptime(max_date, '%Y-%m-%d'))
+        except ValueError:
+            print(f'Warning: Invalid maxDateOpened format "{max_date}", ignoring date filter')
+
+    # Include parents field if we need to check ancestry
+    fields = "nextPageToken,files(id,name,viewedByMeTime,trashedTime"
+    if required_parent:
+        fields += ",parents"
+    fields += ")"
+
+    while True:
+        # Query all trashed files owned by me
+        request = service.files().list(
+            q="trashed=true and 'me' in owners",
+            pageToken=page_token,
+            pageSize=1000,
+            fields=fields
+        )
+        response = execute_request(request, timeout)
+        files = response.get('files', [])
+
+        for f in files:
+            # Check if filename matches glob pattern
+            if not fnmatch.fnmatch(f['name'], pattern):
+                continue
+
+            # Check date filter
+            if max_timestamp and f.get('viewedByMeTime'):
+                viewed_time = parse_time(f['viewedByMeTime'])
+                if viewed_time >= max_timestamp:
+                    continue
+
+            # Check required parent filter
+            if required_parent:
+                parent_id = f.get('parents', [None])[0]
+                if parent_id and not has_parent_named(service, parent_id, required_parent, timeout, parent_cache):
+                    continue
+
+            matching_files.append(f)
+
+        page_token = response.get('nextPageToken')
+        if not page_token:
+            break
+
+    # Sort by viewedByMeTime (oldest first)
+    matching_files.sort(key=lambda x: x.get('viewedByMeTime') or '0000-00-00')
+    return matching_files
 
 class ScanProgress:
     def __init__(self, quiet, noProgress):

@@ -1,41 +1,29 @@
 # Google Drive Trash Cleaner
 
-> :warning: ***This project is deprecated***.
->
-> [Google Drive trash items will be automatically deleted after 30 days starting on October 13, 2020](https://gsuiteupdates.googleblog.com/2020/09/drive-trash-auto-delete-30-days.html).
-This project hence no longer has a purpose, and will not be maintained.
-
-Unlike many other cloud storage services, Google Drive doesn't auto delete files in trash/bin even after they've been there for a long time.
-There isn't even a way to check when a file was trashed.
-Emptying the entire trash folder is just too risky.
-
-This script helps you safely cleanup Google Drive's trash by deleting only files that've been there for more than 30 days
-<small>(or some other period of time)</small>.
-
 ## Dependencies
 To use the Python script directly
 * Python 3.5+
-* Package *google-api-python-client* and *oauth2client*. Run  
-`pip install --upgrade google-api-python-client` and  
-`pip install --upgrade oauth2client`  
-to install
-
-To use the Windows binary (download on the [releases](https://github.com/cfbao/google-drive-trash-cleaner/releases) page)
-* Windows update [KB2999226](https://support.microsoft.com/en-gb/help/2999226/update-for-universal-c-runtime-in-windows "Update for Universal C Runtime in Windows")
+* Required packages: *google-api-python-client*, *google-auth*, *google-auth-oauthlib*, and *google-auth-httplib2*. Run
+`pip install -r requirements.txt`
+to install all dependencies
 
 ## How-to
-Download `cleaner`([.py](https://raw.githubusercontent.com/cfbao/google-drive-trash-cleaner/v1.1.2/cleaner.py) or
-[.exe](https://github.com/cfbao/google-drive-trash-cleaner/releases/download/v1.1.2/cleaner.exe)),
-place it in an empty local folder, and run it from command line.
+Download `cleaner.py`, place it in an empty local folder, and run it from command line.
 
 By default, `cleaner` retrieves a list of all files trashed more than 30 days ago, and prints their info on screen.
 You're asked whether you want to delete them.
 If confirmed, these files are permanently deleted from Google Drive.
 
 ### Google authorization
+Before running `cleaner` for the first time, you need to set up OAuth 2.0 credentials:
+1. Go to [Google Cloud Console](https://console.cloud.google.com/)
+2. Create a project and enable the Google Drive API
+3. Create OAuth 2.0 credentials (Desktop app type)
+4. Download the JSON file and save it as `client_secrets.json` in the same directory as `cleaner.py`
+
 The first time you run `cleaner`, you will be prompted with a Google authorization page asking you for permission to view and manage your Google Drive files.
-Once authorized, a credential file will be saved in `.credentials\google-drive-trash-cleaner.json` under your home directory (`%UserProfile%` on Windows).
-You don't need to manually authorize `cleaner` again until you delete this credential file or revoke permission on your Google [account](https://myaccount.google.com/permissions "Apps connected to your account") page.  
+Once authorized, a credential file will be saved in `.credentials/google-drive-trash-cleaner.json` under your home directory.
+You don't need to manually authorize `cleaner` again until you delete this credential file or revoke permission on your Google [account](https://myaccount.google.com/permissions "Apps connected to your account") page.
 You can specify a custom location for the credential file by using the command line option `--credfile`. This is helpful if you're using multiple Google accounts with `cleaner`.
 
 ### `page_token` file
@@ -51,7 +39,7 @@ More command line options are available. You can read about them by running `cle
 ```
 usage: cleaner [-h] [-a] [-v] [-d #] [-q] [-t SECS] [-m] [--noprogress]
                [--fullpath] [--logfile PATH] [--ptokenfile PATH]
-               [--credfile PATH]
+               [--credfile PATH] [-g [PATH]]
 
 optional arguments:
   -h, --help            show this help message and exit
@@ -73,7 +61,37 @@ optional arguments:
                         path, may be different from the original path (when
                         trashing) if the original parent folder has moved.
   --logfile PATH        Path to log file. Default is no logs
+  --ptokenfile PATH     Path to page token file. Default is "page_token" in
+                        cleaner's parent folder
+  --credfile PATH       Path to OAuth2Credentials file. Default is
+                        ~/.credentials/google-drive-trash-cleaner.json
+  -g [PATH], --globs [PATH]
+                        Use glob patterns from config file for pattern-based
+                        deletion. Default file: globs.json. When specified,
+                        ignores --days.
 ```
+
+### Glob-based deletion
+
+The `-g/--globs` option enables pattern-based deletion using a JSON config file. Example `globs.json`:
+
+```json
+{
+    "maxFilesPerDelete": 100,
+    "maxDateOpened": "2025-01-01",
+    "requiredParent": "myFolder",
+    "globs": [
+        "*.json",
+        "backup_*.txt"
+    ]
+}
+```
+
+Config options:
+- `globs` (required): Array of glob patterns to match filenames
+- `maxFilesPerDelete`: Maximum files to process per confirmation prompt (default: 100)
+- `maxDateOpened`: Only delete files last opened before this date (YYYY-MM-DD)
+- `requiredParent` (optional): Only delete files that have this folder name somewhere in their path ancestry
 
 ### Credit
 The idea for the script's working mechanism is borrowed from
